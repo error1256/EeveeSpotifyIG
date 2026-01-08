@@ -74,6 +74,8 @@ The tweak also sets `trackRowsEnabled` to `true`, allowing you to see track rows
 
 ## Installation
 
+[IPA Website](https://errorc003c004.pythonanywhere.com/downloads)
+
 For sideloaded IPAs, we recommend using **Sideloadly** or certificate-based signing tools like **ksign** for best compatibility.
 
 To open Spotify links in sideloaded app, use [OpenSpotifySafariExtension](https://github.com/BillyCurtis/OpenSpotifySafariExtension). Remember to activate it and allow access in Settings > Safari > Extensions.
