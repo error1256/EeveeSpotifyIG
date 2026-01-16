@@ -18,16 +18,83 @@ var hasShownUnauthorizedPopUp = false
 private let geniusLyricsRepository = GeniusLyricsRepository()
 private let petitLyricsRepository = PetitLyricsRepository()
 
+// Overload for 9.1.6 where we only have track ID from URL
+private func loadCustomLyricsForTrackId(_ trackId: String) throws -> Lyrics {
+    
+    let source = UserDefaults.lyricsSource
+    
+    // Check if we have captured metadata from the UI hooks
+    let hasMetadata = capturedTrackId == trackId && capturedTrackTitle != nil && capturedArtistName != nil
+    
+    if hasMetadata {
+    }
+    
+    // For 9.1.6: Genius/LRCLIB/Petit need track title/artist
+    // They will only work if we have captured metadata
+    let needsMetadata = source == .genius || source == .lrclib || source == .petit
+    
+    if needsMetadata && !hasMetadata {
+        throw LyricsError.noSuchSong
+    }
+    
+    // Create search query with available data
+    let searchQuery = LyricsSearchQuery(
+        title: capturedTrackTitle ?? "",
+        primaryArtist: capturedArtistName ?? "",
+        spotifyTrackId: trackId
+    )
+    
+    let options = UserDefaults.lyricsOptions
+    
+    var repository: LyricsRepository
+
+    switch source {
+    case .genius:
+        repository = geniusLyricsRepository
+    case .lrclib:
+        repository = LrclibLyricsRepository.shared
+    case .musixmatch:
+        repository = MusixmatchLyricsRepository.shared
+    case .petit:
+        repository = petitLyricsRepository
+    case .notReplaced:
+        throw LyricsError.invalidSource
+    }
+    
+    let lyricsDto: LyricsDto
+    
+    lyricsState = LyricsLoadingState()
+    
+    do {
+        lyricsDto = try repository.getLyrics(searchQuery, options: options)
+    }
+    catch let error {
+        throw error
+    }
+    
+    lyricsState.isEmpty = lyricsDto.lines.isEmpty
+    
+    lyricsState.wasRomanized = lyricsDto.romanization == .romanized
+        || (lyricsDto.romanization == .canBeRomanized && UserDefaults.lyricsOptions.romanization)
+    
+    lyricsState.loadedSuccessfully = true
+
+
+    let lyrics = Lyrics.with {
+        $0.data = lyricsDto.toSpotifyLyricsData(source: source.description)
+    }
+    
+    return lyrics
+}
+
 //
 
 private func loadCustomLyricsForCurrentTrack() throws -> Lyrics {
-    NSLog("[EeveeSpotify] loadCustomLyricsForCurrentTrack called")
     
     guard
         let track = statefulPlayer?.currentTrack() ??
                     nowPlayingScrollViewController?.loadedTrack
         else {
-            NSLog("[EeveeSpotify] No current track found!")
             throw LyricsError.noCurrentTrack
         }
     
@@ -36,7 +103,6 @@ private func loadCustomLyricsForCurrentTrack() throws -> Lyrics {
         ? track.artistTitle()
         : track.artistName()
     
-    NSLog("[EeveeSpotify] Loading lyrics for: \(trackTitle) - \(artistName)")
     
     let searchQuery = LyricsSearchQuery(
         title: trackTitle,
@@ -131,20 +197,53 @@ private func loadCustomLyricsForCurrentTrack() throws -> Lyrics {
 }
 
 func getLyricsDataForCurrentTrack(_ originalPath: String, originalLyrics: Lyrics? = nil) throws -> Data {
-    guard
-        let track = statefulPlayer?.currentTrack() ??
-                    nowPlayingScrollViewController?.loadedTrack
-        else {
-            throw LyricsError.noCurrentTrack
-        }
     
-    let trackIdentifier = track.trackIdentifier
-    
-    if !trackIdentifier.isEmpty && !originalPath.contains(trackIdentifier) {
-        throw LyricsError.trackMismatch
+    // Extract track ID from URL path since player objects are nil in 9.1.6
+    // Format: /color-lyrics/v2/track/{trackId} or /lyrics/.../{trackId}
+    let trackIdentifier: String
+    if let range = originalPath.range(of: #"/track/([a-zA-Z0-9]+)"#, options: .regularExpression) {
+        let match = originalPath[range]
+        trackIdentifier = String(match.split(separator: "/").last ?? "")
+    } else {
+        throw LyricsError.noCurrentTrack
     }
     
-    var lyrics = try loadCustomLyricsForCurrentTrack()
+    // Verify track ID was extracted
+    if trackIdentifier.isEmpty {
+        throw LyricsError.noCurrentTrack
+    }
+    
+    // Try to capture metadata from view hierarchy at lyrics request time
+    // Always try to capture fresh metadata when track changes
+    // Clear old metadata if track ID changed
+    if capturedTrackId != trackIdentifier {
+        capturedTrackTitle = nil
+        capturedArtistName = nil
+        capturedTrackId = nil
+        
+        // Delay to let Now Playing UI fully update before capturing
+        Thread.sleep(forTimeInterval: 0.3)
+    }
+    
+    
+    // 1. Try MPNowPlayingInfoCenter first (System info)
+    var info: (title: String?, artist: String?)? = getSystemNowPlayingInfo()
+    
+    // 2. Fallback to view hierarchy scraping if system info failed
+    if info == nil {
+        info = searchViewHierarchyForTrackInfo()
+    }
+
+    if let info = info {
+        capturedTrackTitle = info.title
+        capturedArtistName = info.artist
+        capturedTrackId = trackIdentifier
+    } else {
+        // Keep old metadata if we fail to capture new - better than nothing
+    }
+    
+    // Use track ID version for 9.1.6 where we don't have track objects
+    var lyrics = try loadCustomLyricsForTrackId(trackIdentifier)
     
     let lyricsColorsSettings = UserDefaults.lyricsColors
     
@@ -152,21 +251,12 @@ func getLyricsDataForCurrentTrack(_ originalPath: String, originalLyrics: Lyrics
         lyrics.colors = originalLyrics.colors
     }
     else {
-        let extractedColor = switch EeveeSpotify.hookTarget {
-        case .lastAvailableiOS14:
-            track.extractedColorHex()
-        default:
-            track.metadata()["extracted_color"]
-        }
-        
+        // For 9.1.6, we don't have track object to extract color from
+        // Use static color if enabled, otherwise use background color or gray
         var color: Color
         
         if lyricsColorsSettings.useStaticColor {
             color = Color(hex: lyricsColorsSettings.staticColor)
-        }
-        else if let extractedColor = extractedColor {
-            color = Color(hex: extractedColor)
-                .normalized(lyricsColorsSettings.normalizationFactor)
         }
         else if let uiColor = backgroundViewModel?.color() {
             color = Color(uiColor)
@@ -183,5 +273,6 @@ func getLyricsDataForCurrentTrack(_ originalPath: String, originalLyrics: Lyrics
         }
     }
     
-    return try lyrics.serializedBytes()
+    let serializedData = try lyrics.serializedData()
+    return serializedData
 }

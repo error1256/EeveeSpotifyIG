@@ -4,8 +4,8 @@ set -e
 # Local IPA build script for EeveeSpotify
 # This script matches the GitHub Actions workflow but runs locally
 
-SPOTIFY_IPA="${1:-Decrypted IPA/com.spotify.client-9.1.6-Decrypted.ipa}"
-VERSION="6.4.8"
+SPOTIFY_IPA="${1:-Decrypted IPA/com.spotify.client_9.1.12_und3fined.ipa}"
+VERSION="6.5.0"
 OUTPUT_DIR="Outputs/IPAS"
 
 # Determine package scheme (rootful=arm, rootless=arm64)
@@ -41,7 +41,7 @@ ivinject-arm64 \
   "$SPOTIFY_IPA" \
   "$BASE_IPA" \
   -i "packages/com.eevee.spotify_${VERSION}_iphoneos-${ARCH}.deb" \
-     "/tmp/ees-ipa/org.swift.protobuf.swiftprotobuf_1.29.0_iphoneos-arm.deb" \
+     "${THEOS}/lib/iphone/rootless/SwiftProtobuf.framework" \
      "/tmp/ees-ipa/OpenSpotifySafariExtension/OpenSpotifySafariExtension.appex" \
   -s - -d --level Optimal \
   -r Watch
